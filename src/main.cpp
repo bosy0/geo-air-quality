@@ -86,6 +86,25 @@ void drawChemistry()
     M5.Lcd.drawString(quality, 217, 148, 2);
 
     M5.Lcd.setTextDatum(TL_DATUM);
+
+        // ── AJOUT : Température, Humidité, Pression ──
+    M5.Lcd.setTextColor(CYAN, BLACK);
+
+    char tempBuf[16];
+    sprintf(tempBuf, "%.1f C", bme.temperature);
+    M5.Lcd.fillRect(65, 155, 100, 16, BLACK);
+    M5.Lcd.drawString(tempBuf, 65, 162, 2);
+
+    char humBuf[16];
+    sprintf(humBuf, "%.1f %%", bme.humidity);
+    M5.Lcd.fillRect(180, 155, 100, 16, BLACK);
+    M5.Lcd.drawString(humBuf, 180, 162, 2);
+
+    char presBuf[16];
+    sprintf(presBuf, "%.0f hPa", bme.pressure / 100.0f);
+    M5.Lcd.fillRect(65, 170, 140, 16, BLACK);
+    M5.Lcd.drawString(presBuf, 65, 177, 2);
+    // ── FIN AJOUT ──
 }
 
 // ── GPS ──────────────────────────────────────────────────────────────────────
@@ -148,6 +167,11 @@ void setup()
     // Labels fixes chimie
     M5.Lcd.setTextColor(WHITE, BLACK);
     M5.Lcd.drawString("VOC :", 10, 148, 2);
+
+    // Temp, Humi, Press
+    M5.Lcd.drawString("Temp:", 10, 162, 2);   // AJOUT
+    M5.Lcd.drawString("Humi:", 145, 162, 2);  // AJOUT
+    M5.Lcd.drawString("Pres:", 10, 177, 2);   // AJOUT
 
     // Labels fixes GPS
     M5.Lcd.drawString("Lat :", 10, 193, 2);
