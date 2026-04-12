@@ -1,0 +1,30 @@
+# Alertes qualite de l'air par email
+# A coller dans configuration.yaml de Home Assistant
+
+# Config SMTP
+notify:
+  - name: email_alerte_air
+    platform: smtp
+    server: smtp.ionos.fr
+    port: 587
+    encryption: starttls
+    sender: iot@bicu.fr
+    username: iot@bicu.fr
+    password: !secret smtp_password
+    recipient:
+      - nathan.bosy@gmail.com
+
+# Automations
+automation:
+  - alias: "Alerte eCO2 DANGER"
+    description: "Email si eCO2 depasse 2000 ppm pendant 10 secondes"
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.m5stack_1_eco2
+        above: 2000
+        for: "00:00:10"
+    action:
+      - service: notify.email_alerte_air
+        data:
+          title: "Alerte Air - eCO2"
+          message: "eCO2 a {{ states('sensor.m5stack_1_eco2') }} ppm (seuil DANGER depasse)"

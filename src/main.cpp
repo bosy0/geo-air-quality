@@ -431,7 +431,7 @@ void drawPageAir() {
         M5.Lcd.drawString(lbl, cx[i], cy+52, 1);
     }
 
-    int sep = CONT_Y + 82;
+    int sep = CONT_Y + 92;
     M5.Lcd.drawFastHLine(10, sep, 300, CLR_SEP);
 
     // TVOC

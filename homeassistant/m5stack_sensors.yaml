@@ -140,7 +140,7 @@ mqtt:
       default_entity_id: binary_sensor.m5stack_1_charging
       unique_id: m5stack_1_charging
       state_topic: "sensors/m5stack_1/data"
-      value_template: "{{ value_json.charging }}"
+      value_template: "{{ value_json.charging | lower }}"
       device_class: battery_charging
       payload_on: "true"
       payload_off: "false"

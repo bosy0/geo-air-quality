@@ -14,14 +14,17 @@ HiveMQ Cloud (broker MQTT distant)
     | MQTT
     v
 Home Assistant (hors Docker)
-    |
-    | integration InfluxDB
-    v
-InfluxDB 2.7  (Docker)  <--Flux--  Grafana 11 (Docker)
-                                         |
-                                         v
-                                 Carte interactive
-                                 (http://localhost:3000)
+    |                      \
+    | InfluxDB              \ alertes email (SMTP)
+    |                        \__________________
+    |                                          | 
+    v                                          v
+InfluxDB 2.7  <--Flux-->  Grafana 11       Boite mail
+  (Docker)                 (Docker)
+                             |
+                             v
+                    Carte interactive
+                    (http://localhost:3000)
 ```
 
 ## Materiel
@@ -134,7 +137,21 @@ docker compose up -d
 
 **c) InfluxDB** : Settings > Add integration > InfluxDB. Host = IP machine Docker, port 8086, API v2, org `homeassistant`, bucket `homeassistant`, token = `INFLUXDB_TOKEN`.
 
-### 5. Ouvrir la carte
+### 5. Alertes email (optionnel)
+
+Des alertes par email sont envoyees automatiquement quand un seuil DANGER est depasse (ex : eCO2 > 2000 ppm).
+
+**a)** Ajouter le mot de passe SMTP dans `secrets.yaml` de HA :
+
+```yaml
+smtp_password: "mot_de_passe_email"
+```
+
+**b)** Copier le contenu de `homeassistant/alerts.yaml` dans `configuration.yaml`, puis redemarrer HA.
+
+**c)** Verifier dans Settings > Automations que les 3 alertes apparaissent.
+
+### 6. Ouvrir la carte
 
 `http://localhost:3000` > Dashboards > **Air Quality Map**
 

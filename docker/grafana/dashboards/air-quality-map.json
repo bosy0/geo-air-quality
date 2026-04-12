@@ -452,7 +452,7 @@
       "type": "timeseries"
     }
   ],
-  "refresh": "30s",
+  "refresh": "10s",
   "schemaVersion": 39,
   "tags": ["air-quality", "iot", "m5stack"],
   "templating": { "list": [] },
