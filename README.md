@@ -1,70 +1,84 @@
-# Capteurs Géolocalisés de Qualité de l'Air
+# Capteurs Geolocalises de Qualite de l'Air
 
-Système de surveillance de la qualité de l'air basé sur des capteurs embarqués sur des vélos. Les données sont collectées en temps réel, remontées via MQTT et visualisées sur une carte colorée avec tracé historique 24h.
+Systeme de surveillance de la qualite de l'air embarque sur velo. Les donnees sont collectees en temps reel, remontees via MQTT et visualisees sur une carte interactive.
 
 ## Architecture
 
 ```
 M5Stack (capteurs)
-    │
-    │ MQTT TLS (port 8883)
-    ▼
+    |
+    | MQTT TLS (port 8883)
+    v
 HiveMQ Cloud (broker MQTT distant)
-    │
-    │ MQTT
-    ▼
-Mosquitto (broker local Docker)
-    │
-    │ MQTT
-    ▼
-Home Assistant (domotique)
-    │
-    │ InfluxDB integration
-    ▼
-InfluxDB (base de données time-series, Docker)
-    │
-    │ Flux queries
-    ▼
-Grafana (visualisation carte, Docker)
+    |
+    | MQTT
+    v
+Home Assistant (hors Docker)
+    |
+    | integration InfluxDB
+    v
+InfluxDB 2.7  (Docker)  <--Flux--  Grafana 11 (Docker)
+                                         |
+                                         v
+                                 Carte interactive
+                                 (http://localhost:3000)
 ```
 
-## Matériel
+## Materiel
 
-| Composant | Rôle | Connexion |
+| Composant | Role | Connexion |
 |---|---|---|
-| M5Stack Basic (ESP32) | Microcontrôleur principal + écran | — |
+| M5Stack Basic (ESP32) | Microcontroleur + ecran | -- |
 | PMS5003 | Particules PM1.0, PM2.5, PM10 | Port B (UART1 RX=36, TX=26) |
-| BME680 | VOC / qualité air (résistance gaz) | Port A (I2C SDA=21, SCL=22) |
-| SHT3X (ENV III) | Température, Humidité | Port A (I2C addr 0x44) |
-| QMP6988 (ENV III) | Pression, Altitude barométrique | Port A (I2C addr 0x70) |
-| GPS | Géolocalisation (lat, lon, alt, sats) | Port C (UART2 RX=16, TX=17) |
+| BME680 | Resistance gaz (VOC) | Port A (I2C 0x76/0x77) |
+| SGP30 | TVOC (ppb), eCO2 (ppm) | Port A (I2C 0x58) |
+| SHT3X (ENV III) | Temperature, Humidite | Port A (I2C 0x44) |
+| QMP6988 (ENV III) | Pression, Altitude | Port A (I2C 0x70) |
+| GPS | Lat, Lon, Alt, Satellites | Port C (UART2 RX=16, TX=17) |
+| Carte SD | Buffer hors-ligne | Slot integre |
 
 ## Interface M5Stack
 
-L'écran est organisé en 3 pages navigables :
-
-- **Bouton A** : éteindre / allumer l'écran
-- **Bouton B** : page précédente
-- **Bouton C** : page suivante
+| Bouton | Action |
+|---|---|
+| **A** (gauche) | Page precedente |
+| **B** (milieu) | Ecran on/off |
+| **C** (droite) | Page suivante |
 
 | Page | Contenu |
 |---|---|
-| Air | PM1.0, PM2.5, PM10 (couleur qualité), barre VOC |
-| Env | Température, Humidité, Pression, Altitude |
-| GPS | Latitude, Longitude, Satellites, Altitude GPS |
+| **Air** | PM1.0, PM2.5, PM10 + TVOC, eCO2 (4 niveaux : BON / MOYEN / MAUVAIS / DANGER) |
+| **Env** | Temperature, Humidite, Pression, GPS |
 
-La barre de statut en haut affiche en permanence : connexion MQTT (vert/jaune/rouge) et niveau de batterie.
+La barre de statut affiche la connexion (vert/jaune/rouge) et le niveau de batterie.
 
-## Données publiées (MQTT)
+## Seuils de qualite de l'air
 
-Topic : `sensors/m5stack_1/data`
-Fréquence : toutes les 10 secondes
-Format JSON :
+| Polluant | BON | MOYEN | MAUVAIS | DANGER | Source |
+|---|---|---|---|---|---|
+| PM2.5 (ug/m3) | 0-10 | 10-25 | 25-50 | >50 | Indice ATMO, OMS 2021 |
+| PM10 (ug/m3) | 0-20 | 20-50 | 50-100 | >100 | Indice ATMO, OMS 2021 |
+| PM1.0 (ug/m3) | 0-10 | 10-20 | 20-35 | >35 | Extrapole depuis PM2.5 |
+| TVOC (ppb) | 0-220 | 220-660 | 660-2200 | >2200 | ANSES, UBA (Allemagne) |
+| eCO2 (ppm) | 400-800 | 800-1200 | 1200-2000 | >2000 | ANSES, NF EN 16798-1 |
+| Temperature | 19-24 C | 17-27 C | 14-30 C | hors | ANSES |
+| Humidite | 40-60% | 30-70% | 20-80% | hors | ANSES, OMS |
+
+Sources :
+- **Indice ATMO** : atmo-france.org (indice national de qualite de l'air)
+- **OMS 2021** : WHO Global Air Quality Guidelines
+- **ANSES** : Agence nationale de securite sanitaire (qualite air interieur)
+- **UBA** : Umweltbundesamt (agence federale allemande, reference TVOC)
+- **NF EN 16798-1** : norme europeenne ventilation et qualite air interieur
+
+## Donnees MQTT
+
+Topic : `sensors/m5stack_1/data` (toutes les 10 s)
 
 ```json
 {
   "pm1": 2, "pm25": 5, "pm10": 8,
-  "voc": 245.3,
+  "voc": 245.3, "tvoc": 120, "eco2": 412,
   "temp": 22.4, "humi": 58.1,
   "pres": 1013.2, "alt": 120.0,
   "lat": 48.11344, "lng": -1.64723,
@@ -73,78 +87,73 @@ Format JSON :
 }
 ```
 
-## Stack logicielle
-
-| Service | Port | Rôle |
-|---|---|---|
-| HiveMQ Cloud | 8883 (TLS) | Broker MQTT distant |
-| Mosquitto | 1883 | Broker MQTT local (Docker) |
-| Home Assistant | 8123 | Domotique, entités, alertes |
-| InfluxDB | 8086 | Stockage time-series |
-| Grafana | 3000 | Carte qualité de l'air |
+Si le MQTT est indisponible, les messages sont bufferises sur carte SD (max 500 KB) et renvoyes a la reconnexion.
 
 ## Installation
 
-### Prérequis
+### Prerequis
 
-- [PlatformIO](https://platformio.org/install) pour compiler et flasher le M5Stack
-- Docker pour les services (Mosquitto, InfluxDB, Grafana)
-- Home Assistant (Core)
+- [PlatformIO](https://platformio.org/install)
+- Docker + Docker Compose
+- Home Assistant deja installe
+- Compte [HiveMQ Cloud](https://console.hivemq.cloud) (gratuit)
 
-### 1. Flasher le M5Stack
+### 1. Identifiants firmware
+
+```bash
+cp src/credentials.h.example src/credentials.h
+```
+
+Remplir `WIFI_SSID`, `WIFI_PASS`, `MQTT_HOST`, `MQTT_USER`, `MQTT_PASS`, `DEVICE_ID`.
+Ce fichier est ignore par git.
+
+### 2. Flasher le M5Stack
 
 ```bash
 pio run --target upload
 ```
 
-### 2. Lancer les services Docker
+### 3. Lancer InfluxDB + Grafana
 
 ```bash
-# Mosquitto
-docker run -d --name mosquitto --network host eclipse-mosquitto
-
-# InfluxDB
-docker run -d --name influxdb --network host -v influxdb-data:/var/lib/influxdb2 influxdb:2
-
-# Grafana
-docker run -d --name grafana --network host \
-  -e GF_SECURITY_ALLOW_EMBEDDING=true \
-  -v grafana-data:/var/lib/grafana grafana/grafana
+cd docker
+cp .env.example .env
 ```
 
-### 3. Configurer InfluxDB
+Remplir `INFLUXDB_PASSWORD`, `INFLUXDB_TOKEN`, `GRAFANA_ADMIN_PASSWORD`.
 
-Ouvrir `http://localhost:8086` et créer :
-- Organisation : `homeassistant`
-- Bucket : `homeassistant`
-- Générer un token **All Access**
+```bash
+docker compose up -d
+```
 
 ### 4. Configurer Home Assistant
 
-Ajouter l'intégration InfluxDB via **Settings → Integrations → Add → InfluxDB** avec :
-- URL : `http://localhost:8086`
-- Organisation : `homeassistant`
-- Bucket : `homeassistant`
-- Token : celui généré à l'étape 3
+**a) MQTT** : Settings > Add integration > MQTT. Meme host/user/pass que dans `credentials.h`, port 8883 avec TLS.
 
-Copier le fichier `configuration.yaml` du projet dans le dossier HA pour déclarer toutes les entités MQTT.
+**b) Entites** : copier `homeassistant/m5stack_sensors.yaml` dans `configuration.yaml`, puis Settings > YAML > Reload MQTT.
 
-### 5. Configurer Grafana
+**c) InfluxDB** : Settings > Add integration > InfluxDB. Host = IP machine Docker, port 8086, API v2, org `homeassistant`, bucket `homeassistant`, token = `INFLUXDB_TOKEN`.
 
-- Ouvrir `http://localhost:3000`
-- Ajouter InfluxDB comme datasource (Flux, `http://localhost:8086`)
-- Créer un panel **Geomap** avec la requête Flux du fichier `influxdb_config.yaml`
+### 5. Ouvrir la carte
 
-## Ajouter un 2ème vélo
+`http://localhost:3000` > Dashboards > **Air Quality Map**
 
-Dans le code M5Stack, changer simplement :
-```cpp
-#define DEVICE_ID "m5stack_2"
-```
+## Stack
 
-Le topic MQTT devient `sensors/m5stack_2/data`. Ajouter les entités correspondantes dans `configuration.yaml` et un nouveau layer dans Grafana.
+| Service | Port | Role |
+|---|---|---|
+| HiveMQ Cloud | 8883 | Broker MQTT (TLS) |
+| Home Assistant | 8123 | Bridge MQTT > InfluxDB |
+| InfluxDB | 8086 | Stockage time-series (Docker) |
+| Grafana | 3000 | Dashboard carte (Docker) |
 
-## Équipe
+## Ajouter un 2eme velo
+
+1. Changer `DEVICE_ID` en `"m5stack_2"` dans `credentials.h` et flasher.
+2. Dupliquer les entites MQTT dans HA en remplacant `m5stack_1` par `m5stack_2`.
+3. Dans Grafana, elargir la regex : `^m5stack_1_` > `^m5stack_(1|2)_`.
+
+## Equipe
 
 - [bosy0](https://github.com/bosy0)
 - [RemRem-28](https://github.com/RemRem-28)

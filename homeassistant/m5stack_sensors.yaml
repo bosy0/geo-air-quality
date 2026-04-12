@@ -1,0 +1,156 @@
+# Capteurs MQTT M5Stack pour Home Assistant
+# A coller dans configuration.yaml puis reload MQTT
+# default_entity_id force l'entity_id pour les requetes Grafana
+
+mqtt:
+  sensor:
+    # Particules
+    - name: "PM1.0"
+      default_entity_id: sensor.m5stack_1_pm1
+      unique_id: m5stack_1_pm1
+      state_topic: "sensors/m5stack_1/data"
+      value_template: "{{ value_json.pm1 }}"
+      unit_of_measurement: "µg/m³"
+      device_class: pm1
+      state_class: measurement
+
+    - name: "PM2.5"
+      default_entity_id: sensor.m5stack_1_pm25
+      unique_id: m5stack_1_pm25
+      state_topic: "sensors/m5stack_1/data"
+      value_template: "{{ value_json.pm25 }}"
+      unit_of_measurement: "µg/m³"
+      device_class: pm25
+      state_class: measurement
+
+    - name: "PM10"
+      default_entity_id: sensor.m5stack_1_pm10
+      unique_id: m5stack_1_pm10
+      state_topic: "sensors/m5stack_1/data"
+      value_template: "{{ value_json.pm10 }}"
+      unit_of_measurement: "µg/m³"
+      device_class: pm10
+      state_class: measurement
+
+    # Qualite de l'air
+    - name: "VOC"
+      default_entity_id: sensor.m5stack_1_voc
+      unique_id: m5stack_1_voc
+      state_topic: "sensors/m5stack_1/data"
+      value_template: "{{ value_json.voc }}"
+      unit_of_measurement: "kΩ"
+      state_class: measurement
+
+    - name: "TVOC"
+      default_entity_id: sensor.m5stack_1_tvoc
+      unique_id: m5stack_1_tvoc
+      state_topic: "sensors/m5stack_1/data"
+      value_template: "{{ value_json.tvoc }}"
+      unit_of_measurement: "ppb"
+      state_class: measurement
+
+    - name: "eCO2"
+      default_entity_id: sensor.m5stack_1_eco2
+      unique_id: m5stack_1_eco2
+      state_topic: "sensors/m5stack_1/data"
+      value_template: "{{ value_json.eco2 }}"
+      unit_of_measurement: "ppm"
+      device_class: carbon_dioxide
+      state_class: measurement
+
+    # Environnement
+    - name: "Température"
+      default_entity_id: sensor.m5stack_1_temp
+      unique_id: m5stack_1_temp
+      state_topic: "sensors/m5stack_1/data"
+      value_template: "{{ value_json.temp }}"
+      unit_of_measurement: "°C"
+      device_class: temperature
+      state_class: measurement
+
+    - name: "Humidité"
+      default_entity_id: sensor.m5stack_1_humi
+      unique_id: m5stack_1_humi
+      state_topic: "sensors/m5stack_1/data"
+      value_template: "{{ value_json.humi }}"
+      unit_of_measurement: "%"
+      device_class: humidity
+      state_class: measurement
+
+    - name: "Pression"
+      default_entity_id: sensor.m5stack_1_pres
+      unique_id: m5stack_1_pres
+      state_topic: "sensors/m5stack_1/data"
+      value_template: "{{ value_json.pres }}"
+      unit_of_measurement: "hPa"
+      device_class: atmospheric_pressure
+      state_class: measurement
+
+    - name: "Altitude barométrique"
+      default_entity_id: sensor.m5stack_1_alt
+      unique_id: m5stack_1_alt
+      state_topic: "sensors/m5stack_1/data"
+      value_template: "{{ value_json.alt }}"
+      unit_of_measurement: "m"
+      state_class: measurement
+
+    # GPS
+    - name: "Latitude GPS"
+      default_entity_id: sensor.m5stack_1_lat
+      unique_id: m5stack_1_lat
+      state_topic: "sensors/m5stack_1/data"
+      value_template: "{{ value_json.lat }}"
+      unit_of_measurement: "°"
+
+    - name: "Longitude GPS"
+      default_entity_id: sensor.m5stack_1_lng
+      unique_id: m5stack_1_lng
+      state_topic: "sensors/m5stack_1/data"
+      value_template: "{{ value_json.lng }}"
+      unit_of_measurement: "°"
+
+    - name: "Altitude GPS"
+      default_entity_id: sensor.m5stack_1_gps_alt
+      unique_id: m5stack_1_gps_alt
+      state_topic: "sensors/m5stack_1/data"
+      value_template: "{{ value_json.gps_alt }}"
+      unit_of_measurement: "m"
+      state_class: measurement
+
+    - name: "Satellites GPS"
+      default_entity_id: sensor.m5stack_1_sats
+      unique_id: m5stack_1_sats
+      state_topic: "sensors/m5stack_1/data"
+      value_template: "{{ value_json.sats }}"
+      unit_of_measurement: "sat"
+      state_class: measurement
+
+    # Batterie
+    - name: "Batterie M5Stack"
+      default_entity_id: sensor.m5stack_1_battery
+      unique_id: m5stack_1_battery
+      state_topic: "sensors/m5stack_1/data"
+      value_template: "{{ value_json.battery }}"
+      unit_of_measurement: "%"
+      device_class: battery
+      state_class: measurement
+
+  binary_sensor:
+    - name: "Charge M5Stack"
+      default_entity_id: binary_sensor.m5stack_1_charging
+      unique_id: m5stack_1_charging
+      state_topic: "sensors/m5stack_1/data"
+      value_template: "{{ value_json.charging }}"
+      device_class: battery_charging
+      payload_on: "true"
+      payload_off: "false"
+
+  device_tracker:
+    - name: "M5Stack"
+      state_topic: "sensors/m5stack_1/data"
+      json_attributes_topic: "sensors/m5stack_1/data"
+      json_attributes_template: >-
+        {"latitude": {{ value_json.lat }},
+         "longitude": {{ value_json.lng }},
+         "gps_accuracy": 5}
+      source_type: gps

@@ -1,6 +1,11 @@
+// M5Stack Air Monitor
+// PMS5003, BME680, SHT3X, QMP6988, SGP30, GPS
+// Buffer SD hors-ligne, MQTT vers HiveMQ Cloud
+// Seuils : ATMO / OMS 2021 / ANSES
+
 #include <M5Stack.h>
 #include <WiFi.h>
-#include <WiFiClient.h>
+#include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <Wire.h>
 #include <Adafruit_BME680.h>
@@ -11,43 +16,43 @@
 #include <SD.h>
 #include <SPI.h>
 #include <Adafruit_SGP30.h>
+#include "credentials.h"
 
-// --- Configuration ---
-#define WIFI_SSID  "insa-rasprack"
-#define WIFI_PASS  "insa-rasprack-pwd"
-#define MQTT_HOST  "192.168.50.180"
-#define MQTT_PORT  1883
-#define DEVICE_ID  "m5stack_1"
-
-IPAddress server(192, 168, 50 ,180);
-
-// --- Couleurs & UI ---
+// Couleurs
 #define CLR_BG     0x0000
 #define CLR_BAR    0x1082
 #define CLR_SEP    0x3186
 #define CLR_LABEL  0x8C71
-#define CLR_GOOD   0x07E0
-#define CLR_OK     0xFFE0
-#define CLR_BAD    0xF800
+#define CLR_GOOD   0x07E0   // vert
+#define CLR_MED    0xFFE0   // jaune
+#define CLR_BAD    0xFD20   // orange
+#define CLR_DANGER 0xF800   // rouge
 #define CLR_CYAN   0x07FF
-#define BAR_H   28
-#define BTN_Y   216
-#define CONT_Y  (BAR_H + 1)
 
-// --- Objets ---
-HardwareSerial SerialPMS(1);
-HardwareSerial SerialGPS(2);
-PMS            pms(SerialPMS);
-PMS::DATA      pmsData;
-TinyGPSPlus    gps;
+// Ecran
+#define BAR_H      28
+#define BTN_Y      216
+#define CONT_Y     (BAR_H + 1)
+#define NUM_PAGES  2
+
+// Buffer SD
+#define SD_MAX_BYTES   512000
+#define SD_FLUSH_BATCH 5
+
+// Hardware
+HardwareSerial  SerialPMS(1);
+HardwareSerial  SerialGPS(2);
+PMS             pms(SerialPMS);
+PMS::DATA       pmsData;
+TinyGPSPlus     gps;
 Adafruit_BME680 bme;
-SHT3X          sht;
-QMP6988        qmp;
-Adafruit_SGP30 sgp;
-
-WiFiClient wifiClient;
+SHT3X           sht;
+QMP6988         qmp;
+Adafruit_SGP30  sgp;
+WiFiClientSecure wifiClient;
 PubSubClient     mqtt(wifiClient);
 
+// Donnees capteurs
 struct {
     uint16_t pm1 = 0, pm25 = 0, pm10 = 0;
     float    temp = 0, humi = 0, pres = 0, alt = 0, voc = 0;
@@ -60,31 +65,33 @@ struct {
     bool     sgpOk = false;
 } d;
 
+// UI
 int  page     = 0;
 bool screenOn = true;
-uint32_t tPms = 0, tBme = 0, tBat = 0, tMqtt = 0, tRecon = 0, tDisplay = 0;
+
+// Timers
+uint32_t tPms = 0, tBme = 0, tBat = 0, tMqtt = 0;
+uint32_t tRecon = 0, tDisplay = 0, tWifiCheck = 0;
 uint32_t mqttRetryDelay = 2000;
-const uint32_t maxRetryDelay = 60000;
+const uint32_t MAX_RETRY_DELAY = 60000;
 bool sdAvailable = false;
 
-// --- Prototypes ---
-void drawStatusBar();
-void drawBtnBar();
-void drawContent();
-void drawPageAir();
-void drawPageEnv();
-void drawPageGPS();
-void drawPageNet();
-void drawPageSGP();
-void setScreen(bool on);
-uint16_t qColor(float v, float good, float ok);
-void drawProgressBar(int x, int y, int w, int h, float ratio, uint16_t color);
+// Prototypes
+void     drawStatusBar();
+void     drawBtnBar();
+void     drawContent();
+void     drawPageAir();
+void     drawPageEnv();
+void     setScreen(bool on);
+uint16_t qColor(float v, float good, float med, float bad);
+const char* qLabel(float v, float good, float med, float bad);
+void     drawProgressBar(int x, int y, int w, int h, float ratio, uint16_t color);
 
-void callback(char *topic, byte *payload, unsigned int length) {
-    Serial.print("Message arrived: ");
-    Serial.println(topic);
-    if (strcmp(topic, "mytopic/alive") == 0) {
-    }
+// Humidite absolue pour compensation SGP30
+uint32_t getAbsoluteHumidity(float t, float h) {
+    float ah = 216.7f * ((h / 100.0f) * 6.112f *
+        exp((17.62f * t) / (243.12f + t)) / (273.15f + t));
+    return (uint32_t)(ah * 256.0f);
 }
 
 void setup() {
@@ -92,90 +99,142 @@ void setup() {
     M5.Power.begin();
     dacWrite(25, 0);
     M5.Speaker.mute();
+
     M5.Lcd.fillScreen(CLR_BG);
     M5.Lcd.setBrightness(150);
 
     if (SD.begin()) sdAvailable = true;
 
+    // Capteurs serie
     SerialPMS.begin(9600, SERIAL_8N1, 36, 26);
     SerialGPS.begin(9600, SERIAL_8N1, 16, 17);
     pms.passiveMode();
     pms.wakeUp();
 
+    // I2C
     Wire.begin(21, 22);
     sht.begin(&Wire, SHT3X_I2C_ADDR, 21, 22);
     qmp.begin(&Wire, QMP6988_SLAVE_ADDRESS_L, 21, 22);
-    
     if (sgp.begin()) d.sgpOk = true;
-    bme.begin(0x77);
 
+    if (!bme.begin(0x77) && !bme.begin(0x76)) {
+        M5.Lcd.setTextDatum(MC_DATUM);
+        M5.Lcd.setTextColor(CLR_DANGER, CLR_BG);
+        M5.Lcd.drawString("BME680 non detecte", 160, 120, 2);
+        M5.Lcd.setTextDatum(TL_DATUM);
+        delay(1500);
+    }
+    bme.setTemperatureOversampling(BME680_OS_8X);
+    bme.setHumidityOversampling(BME680_OS_2X);
+    bme.setPressureOversampling(BME680_OS_4X);
+    bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
+    bme.setGasHeater(320, 150);
+
+    // WiFi + MQTT
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
-    while(WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
-    }
-
-    mqtt.setServer(server, MQTT_PORT);
-    mqtt.setCallback(callback);
+    wifiClient.setInsecure();
+    mqtt.setServer(MQTT_HOST, MQTT_PORT);
     mqtt.setKeepAlive(30);
 
+    d.battery  = M5.Power.getBatteryLevel();
+    d.charging = M5.Power.isCharging();
+
+    M5.Lcd.fillScreen(CLR_BG);
     drawStatusBar();
     drawBtnBar();
+    drawContent();
 }
 
 void loop() {
     M5.update();
     uint32_t now = millis();
 
-    if (M5.BtnA.wasPressed()) { setScreen(!screenOn); return; }
+    // Boutons : A=<  B=ecran  C=>
+    if (M5.BtnB.wasPressed()) { setScreen(!screenOn); return; }
     if (screenOn) {
-        if (M5.BtnB.wasPressed()) { page = (page + 4) % 5; drawBtnBar(); drawContent(); }
-        if (M5.BtnC.wasPressed()) { page = (page + 1) % 5; drawBtnBar(); drawContent(); }
+        if (M5.BtnA.wasPressed()) {
+            page = (page + NUM_PAGES - 1) % NUM_PAGES;
+            drawBtnBar(); drawContent();
+        }
+        if (M5.BtnC.wasPressed()) {
+            page = (page + 1) % NUM_PAGES;
+            drawBtnBar(); drawContent();
+        }
     }
 
-    // Lectures Capteurs
+    // PMS5003 toutes les 2s
     if (now - tPms >= 2000) { tPms = now; pms.requestRead(); }
-    if (pms.read(pmsData)) { d.pm1 = pmsData.PM_AE_UG_1_0; d.pm25 = pmsData.PM_AE_UG_2_5; d.pm10 = pmsData.PM_AE_UG_10_0; }
+    if (pms.read(pmsData)) {
+        d.pm1  = pmsData.PM_AE_UG_1_0;
+        d.pm25 = pmsData.PM_AE_UG_2_5;
+        d.pm10 = pmsData.PM_AE_UG_10_0;
+    }
 
+    // BME680 + ENV III toutes les 3s
     if (now - tBme >= 3000) {
         tBme = now;
         if (bme.performReading()) d.voc = bme.gas_resistance / 1000.0f;
         if (sht.update()) { d.temp = sht.cTemp; d.humi = sht.humidity; }
-        if (qmp.update()) { d.pres = qmp.pressure / 100.0f; d.alt = qmp.altitude; }
+        if (qmp.update())  { d.pres = qmp.pressure / 100.0f; d.alt = qmp.altitude; }
     }
-    if (d.sgpOk && sgp.IAQmeasure()) { d.tvoc = sgp.TVOC; d.eco2 = sgp.eCO2; }
 
+    // SGP30 + compensation humidite
+    if (d.sgpOk) {
+        if (d.humi > 0 && d.temp > -40)
+            sgp.setHumidity(getAbsoluteHumidity(d.temp, d.humi));
+        if (sgp.IAQmeasure()) { d.tvoc = sgp.TVOC; d.eco2 = sgp.eCO2; }
+    }
+
+    // GPS
     while (SerialGPS.available()) gps.encode(SerialGPS.read());
-    if (gps.location.isValid()) { d.lat = gps.location.lat(); d.lng = gps.location.lng(); d.gpsValid = true; }
+    if (gps.location.isValid()) {
+        d.lat = gps.location.lat(); d.lng = gps.location.lng();
+        d.gpsValid = true;
+    }
+    if (gps.satellites.isValid()) d.sats   = gps.satellites.value();
+    if (gps.altitude.isValid())   d.gpsAlt = gps.altitude.meters();
 
-    if (screenOn && now - tDisplay >= 2000) { tDisplay = now; drawStatusBar(); drawContent(); }
+    // Batterie toutes les 30s
+    if (now - tBat >= 30000) {
+        tBat = now;
+        d.battery  = M5.Power.getBatteryLevel();
+        d.charging = M5.Power.isCharging();
+    }
 
-    // --- Reconnexion MQTT ---
+    // Rafraichir l'ecran toutes les 2s
+    if (screenOn && now - tDisplay >= 2000) {
+        tDisplay = now;
+        drawStatusBar(); drawContent();
+    }
+
+    // Reconnexion WiFi toutes les 30s si deconnecte
+    if (!WiFi.isConnected() && now - tWifiCheck >= 30000) {
+        tWifiCheck = now;
+        WiFi.reconnect();
+    }
+
+    // Reconnexion MQTT avec backoff
     if (WiFi.isConnected()) {
         if (!mqtt.connected()) {
             if (now - tRecon >= mqttRetryDelay) {
                 tRecon = now;
-                if (mqtt.connect(DEVICE_ID)) {
-                    mqtt.subscribe("sensor/m5stack/command");
-                } else {
-                    mqttRetryDelay = min(mqttRetryDelay * 2, maxRetryDelay);
-                }
+                if (mqtt.connect(DEVICE_ID, MQTT_USER, MQTT_PASS))
+                    mqttRetryDelay = 2000;
+                else
+                    mqttRetryDelay = min(mqttRetryDelay * 2, MAX_RETRY_DELAY);
             }
         } else {
             mqtt.loop();
         }
     }
 
-    // Envoi MQTT & Gestion SD
+    // Envoi MQTT + buffer SD toutes les 10s
     if (now - tMqtt >= 10000) {
         tMqtt = now;
 
-        // 1. Préparation du JSON complet (Fusion Code 1 + Code 2)
-        char buf[600]; // Buffer assez large pour toutes les données
-        char topic[48];
+        char buf[600], topic[48];
         snprintf(topic, sizeof(topic), "sensors/%s/data", DEVICE_ID);
-        
         snprintf(buf, sizeof(buf),
             "{\"pm1\":%d,\"pm25\":%d,\"pm10\":%d,"
             "\"voc\":%.1f,\"temp\":%.1f,\"humi\":%.1f,"
@@ -186,462 +245,273 @@ void loop() {
             d.pm1, d.pm25, d.pm10,
             d.voc, d.temp, d.humi, d.pres, d.alt,
             d.tvoc, d.eco2,
-            d.gpsValid ? d.lat : 0.0,
-            d.gpsValid ? d.lng : 0.0,
-            d.gpsAlt, d.sats,
-            d.battery,
-            d.charging ? "true" : "false"
-        );
+            d.gpsValid ? d.lat : 0.0, d.gpsValid ? d.lng : 0.0,
+            d.gpsAlt, d.sats, d.battery,
+            d.charging ? "true" : "false");
 
         if (mqtt.connected()) {
-            // 2. Vider le buffer SD s'il y a des données en retard
+            // Vider le buffer SD par lots
             if (sdAvailable && SD.exists("/buffer.txt")) {
-                File file = SD.open("/buffer.txt", FILE_READ);
-                if (file) {
-                    while (file.available()) {
-                        String line = file.readStringUntil('\n');
-                        line.trim();
-                        if (line.length() > 0) {
-                            mqtt.publish(topic, line.c_str(), true);
-                            delay(50); 
+                File fin = SD.open("/buffer.txt", FILE_READ);
+                if (fin) {
+                    File fout = SD.open("/buffer_tmp.txt", FILE_WRITE);
+                    int sent = 0;
+                    char line[600];
+                    while (fin.available()) {
+                        int len = 0;
+                        while (fin.available() && len < 599) {
+                            char c = fin.read();
+                            if (c == '\n') break;
+                            line[len++] = c;
+                        }
+                        line[len] = '\0';
+                        if (len == 0) continue;
+                        if (sent < SD_FLUSH_BATCH) {
+                            mqtt.publish(topic, line, false);
+                            sent++;
+                        } else if (fout) {
+                            fout.println(line);
                         }
                     }
-                    file.close();
+                    fin.close();
+                    bool hasRemaining = false;
+                    if (fout) { hasRemaining = fout.size() > 0; fout.close(); }
                     SD.remove("/buffer.txt");
-                    Serial.println("Buffer SD vidé vers MQTT.");
+                    if (hasRemaining)
+                        SD.rename("/buffer_tmp.txt", "/buffer.txt");
+                    else
+                        SD.remove("/buffer_tmp.txt");
                 }
             }
-            
-            // 3. Envoyer la donnée actuelle
             mqtt.publish(topic, buf, true);
-            Serial.println("Données complètes envoyées via MQTT.");
-
         } else if (sdAvailable) {
-            // 4. Si MQTT déconnecté -> Sauvegarde sur SD
-            File file = SD.open("/buffer.txt", FILE_APPEND);
-            if (file) {
-                file.println(buf);
-                file.close();
-                Serial.println("MQTT déconnecté : donnée stockée sur SD.");
+            long sz = 0;
+            if (SD.exists("/buffer.txt")) {
+                File f = SD.open("/buffer.txt", FILE_READ);
+                if (f) { sz = f.size(); f.close(); }
+            }
+            if (sz < SD_MAX_BYTES) {
+                File f = SD.open("/buffer.txt", FILE_APPEND);
+                if (f) { f.println(buf); f.close(); }
             }
         }
+
         drawStatusBar();
     }
 }
 
-// ─── Écran on/off ────────────────────────────────────────────────────────────
+// Ecran on/off
 void setScreen(bool on) {
     screenOn = on;
     if (on) {
         M5.Lcd.wakeup();
         M5.Lcd.setBrightness(150);
         M5.Lcd.fillScreen(CLR_BG);
-        drawStatusBar();
-        drawBtnBar();
-        drawContent();
+        drawStatusBar(); drawBtnBar(); drawContent();
     } else {
         M5.Lcd.setBrightness(0);
         M5.Lcd.sleep();
     }
 }
 
-// ─── Retourne une couleur selon des seuils qualité ────────────────────────────
-uint16_t qColor(float v, float good, float ok) {
+// Couleur 4 niveaux (plus c'est bas mieux c'est)
+uint16_t qColor(float v, float good, float med, float bad) {
     if (v <= good) return CLR_GOOD;
-    if (v <= ok)   return CLR_OK;
-    return CLR_BAD;
+    if (v <= med)  return CLR_MED;
+    if (v <= bad)  return CLR_BAD;
+    return CLR_DANGER;
 }
 
-// ─── Barre de progression colorée ────────────────────────────────────────────
+// Label texte 4 niveaux
+const char* qLabel(float v, float good, float med, float bad) {
+    if (v <= good) return "BON";
+    if (v <= med)  return "MOYEN";
+    if (v <= bad)  return "MAUVAIS";
+    return "DANGER";
+}
+
+// Couleur temperature (plage de confort ANSES)
+uint16_t tempColor(float t) {
+    if (t >= 19 && t <= 24) return CLR_GOOD;
+    if (t >= 17 && t <= 27) return CLR_MED;
+    if (t >= 14 && t <= 30) return CLR_BAD;
+    return CLR_DANGER;
+}
+
+// Couleur humidite (plage de confort ANSES/OMS)
+uint16_t humiColor(float h) {
+    if (h >= 40 && h <= 60) return CLR_GOOD;
+    if (h >= 30 && h <= 70) return CLR_MED;
+    if (h >= 20 && h <= 80) return CLR_BAD;
+    return CLR_DANGER;
+}
+
+// Barre de progression
 void drawProgressBar(int x, int y, int w, int h, float ratio, uint16_t color) {
     int filled = (int)(w * constrain(ratio, 0.0f, 1.0f));
     M5.Lcd.drawRect(x, y, w, h, CLR_LABEL);
-    if (filled > 2)
-        M5.Lcd.fillRect(x + 1, y + 1, filled - 2, h - 2, color);
-    M5.Lcd.fillRect(x + 1 + max(0, filled - 2), y + 1,
-                    w - 2 - max(0, filled - 2), h - 2, CLR_BG);
+    if (filled > 2) M5.Lcd.fillRect(x+1, y+1, filled-2, h-2, color);
+    M5.Lcd.fillRect(x+1+max(0, filled-2), y+1, w-2-max(0, filled-2), h-2, CLR_BG);
 }
 
-// ─── Barre de statut (haut, 28px) ─────────────────────────────────────────────
+// Barre de statut (haut)
 void drawStatusBar() {
     M5.Lcd.fillRect(0, 0, 320, BAR_H, CLR_BAR);
 
-    // Pastille de connexion (vert=MQTT, jaune=WiFi seul, rouge=hors ligne)
-    uint16_t sc = mqtt.connected()    ? CLR_GOOD :
-                  WiFi.isConnected()  ? CLR_OK   : CLR_BAD;
-    M5.Lcd.fillCircle(14, BAR_H / 2, 6, sc);
+    uint16_t sc = mqtt.connected() ? CLR_GOOD : WiFi.isConnected() ? CLR_MED : CLR_DANGER;
+    M5.Lcd.fillCircle(14, BAR_H/2, 6, sc);
 
-    uint16_t sdColor = CLR_SEP; // Gris par défaut
-    if (sdAvailable) {
-        if (mqtt.connected()) {
-            sdColor = CLR_CYAN;
-        } else {
-            // Clignote toutes les 500ms si on écrit sur SD
-            sdColor = (millis() % 1000 < 500) ? CLR_BAD : CLR_BG;
-        }
-    }
-
-    // Titre centré
     M5.Lcd.setTextDatum(MC_DATUM);
     M5.Lcd.setTextColor(WHITE, CLR_BAR);
-    M5.Lcd.drawString("AIR MONITOR", 160, BAR_H / 2, 2);
+    M5.Lcd.drawString("AIR MONITOR", 160, BAR_H/2, 2);
 
-    // Batterie (droite)
     char batBuf[12];
     snprintf(batBuf, sizeof(batBuf), d.charging ? "~%d%%" : "%d%%", d.battery);
-    M5.Lcd.setTextColor(d.battery > 20 ? CLR_GOOD : CLR_BAD, CLR_BAR);
+    M5.Lcd.setTextColor(d.battery > 20 ? CLR_GOOD : CLR_DANGER, CLR_BAR);
     M5.Lcd.setTextDatum(MR_DATUM);
-    M5.Lcd.drawString(batBuf, 314, BAR_H / 2, 2);
+    M5.Lcd.drawString(batBuf, 314, BAR_H/2, 2);
 
     M5.Lcd.drawFastHLine(0, BAR_H, 320, CLR_SEP);
     M5.Lcd.setTextDatum(TL_DATUM);
 }
 
-// ─── Barre des boutons (bas, 24px) ────────────────────────────────────────────
+// Barre des boutons (bas)
 void drawBtnBar() {
-    M5.Lcd.fillRect(0, BTN_Y, 320, 240 - BTN_Y, CLR_BAR);
+    M5.Lcd.fillRect(0, BTN_Y, 320, 240-BTN_Y, CLR_BAR);
     M5.Lcd.drawFastHLine(0, BTN_Y, 320, CLR_SEP);
 
-    const char* names[] = {"Air", "Env", "GPS", "Net", "SGP"};
+    const char* names[] = {"Air", "Env"};
 
-    // Bouton A : écran
-    M5.Lcd.setTextColor(CLR_LABEL, CLR_BAR);
-    M5.Lcd.setTextDatum(ML_DATUM);
-    M5.Lcd.drawString("[Ecran]", 6, BTN_Y + 12, 1);
-
-    // Indicateur de page (centre)
-    char pageBuf[16];
-    snprintf(pageBuf, sizeof(pageBuf), "< %s >", names[page]);
-    M5.Lcd.setTextColor(WHITE, CLR_BAR);
     M5.Lcd.setTextDatum(MC_DATUM);
-    M5.Lcd.drawString(pageBuf, 160, BTN_Y + 12, 2);
-
+    M5.Lcd.setTextColor(CLR_LABEL, CLR_BAR);
+    M5.Lcd.drawString("<", 54, BTN_Y+12, 2);
+    M5.Lcd.setTextColor(WHITE, CLR_BAR);
+    M5.Lcd.drawString(names[page], 160, BTN_Y+12, 2);
+    M5.Lcd.setTextColor(CLR_LABEL, CLR_BAR);
+    M5.Lcd.drawString(">", 266, BTN_Y+12, 2);
     M5.Lcd.setTextDatum(TL_DATUM);
 }
 
-// ─── Routage des pages ────────────────────────────────────────────────────────
+// Routage des pages
 void drawContent() {
-    // Effacer la zone contenu
-    M5.Lcd.fillRect(0, CONT_Y, 320, BTN_Y - CONT_Y, CLR_BG);
-
+    M5.Lcd.fillRect(0, CONT_Y, 320, BTN_Y-CONT_Y, CLR_BG);
     switch (page) {
         case 0: drawPageAir(); break;
         case 1: drawPageEnv(); break;
-        case 2: drawPageGPS(); break;
-        case 3: drawPageNet(); break;
-        case 4: drawPageSGP(); break;
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Page 0 — Qualité de l'air (PM1.0 / PM2.5 / PM10 + VOC)
-// ─────────────────────────────────────────────────────────────────────────────
+// Page Air : PM + TVOC + eCO2
 void drawPageAir() {
-    // Titre "PARTICULES"
     M5.Lcd.setTextDatum(TC_DATUM);
     M5.Lcd.setTextColor(CLR_CYAN, CLR_BG);
-    M5.Lcd.drawString("PARTICULES", 160, CONT_Y + 4, 2);
+    M5.Lcd.drawString("QUALITE DE L'AIR", 160, CONT_Y+4, 2);
 
-    // 3 colonnes PM (centres à x=53, 160, 267)
-    struct { const char* lbl; uint16_t val; float good; float ok; } pm[3] = {
-        {"PM 1.0", d.pm1,   5,  15},
-        {"PM 2.5", d.pm25, 10,  25},
-        {"PM 10",  d.pm10, 20,  50},
+    struct { const char* lbl; uint16_t val; float good; float med; float bad; } pm[3] = {
+        {"PM 1.0", d.pm1,  10, 20,  35},
+        {"PM 2.5", d.pm25, 10, 25,  50},
+        {"PM 10",  d.pm10, 20, 50, 100},
     };
-    const int col_y = CONT_Y + 26;
+    const int cy = CONT_Y + 24;
     const int cx[3] = {53, 160, 267};
 
     for (int i = 0; i < 3; i++) {
-        uint16_t c = qColor((float)pm[i].val, pm[i].good, pm[i].ok);
+        float v = (float)pm[i].val;
+        uint16_t c = qColor(v, pm[i].good, pm[i].med, pm[i].bad);
+        const char* lbl = qLabel(v, pm[i].good, pm[i].med, pm[i].bad);
 
         M5.Lcd.setTextDatum(TC_DATUM);
         M5.Lcd.setTextColor(CLR_LABEL, CLR_BG);
-        M5.Lcd.drawString(pm[i].lbl, cx[i], col_y, 2);
-
+        M5.Lcd.drawString(pm[i].lbl, cx[i], cy, 2);
         M5.Lcd.setTextColor(c, CLR_BG);
-        M5.Lcd.drawNumber(pm[i].val, cx[i], col_y + 18, 4);
-
+        M5.Lcd.drawNumber(pm[i].val, cx[i], cy+16, 4);
         M5.Lcd.setTextColor(CLR_LABEL, CLR_BG);
-        M5.Lcd.drawString("ug/m3", cx[i], col_y + 48, 1);
+        M5.Lcd.drawString("ug/m3", cx[i], cy+42, 1);
+        M5.Lcd.setTextColor(c, CLR_BG);
+        M5.Lcd.drawString(lbl, cx[i], cy+52, 1);
     }
 
-    // Séparateur
-    const int sep_y = CONT_Y + 88;
-    M5.Lcd.drawFastHLine(10, sep_y, 300, CLR_SEP);
+    int sep = CONT_Y + 82;
+    M5.Lcd.drawFastHLine(10, sep, 300, CLR_SEP);
 
-    // Titre "QUALITE AIR (VOC)"
-    M5.Lcd.setTextDatum(TC_DATUM);
-    M5.Lcd.setTextColor(CLR_CYAN, CLR_BG);
-    M5.Lcd.drawString("QUALITE AIR (VOC)", 160, sep_y + 8, 2);
+    // TVOC
+    float tv = (float)d.tvoc;
+    uint16_t tvC = qColor(tv, 220, 660, 2200);
+    const char* tvL = qLabel(tv, 220, 660, 2200);
+    char tvBuf[24];
+    snprintf(tvBuf, sizeof(tvBuf), "TVOC  %d ppb", d.tvoc);
 
-    // Couleur et label VOC
-    uint16_t vc;
-    const char* vl;
-    if      (d.voc > 300) { vc = CLR_GOOD; vl = "EXCELLENT"; }
-    else if (d.voc > 150) { vc = CLR_GOOD; vl = "BON";       }
-    else if (d.voc >  50) { vc = CLR_OK;   vl = "MOYEN";     }
-    else                  { vc = CLR_BAD;  vl = "MAUVAIS";   }
-
-    const int voc_y = sep_y + 30;
-    char vocBuf[20];
-    snprintf(vocBuf, sizeof(vocBuf), "%.0f kOhm", d.voc);
-
-    M5.Lcd.setTextColor(vc, CLR_BG);
+    int y1 = sep + 8;
+    M5.Lcd.setTextColor(tvC, CLR_BG);
     M5.Lcd.setTextDatum(ML_DATUM);
-    M5.Lcd.drawString(vocBuf, 10, voc_y, 2);
+    M5.Lcd.drawString(tvBuf, 10, y1, 2);
     M5.Lcd.setTextDatum(MR_DATUM);
-    M5.Lcd.drawString(vl, 310, voc_y, 2);
+    M5.Lcd.drawString(tvL, 310, y1, 2);
+    drawProgressBar(10, y1+12, 300, 10, d.tvoc / 2200.0f, tvC);
 
-    // Barre de progression VOC (0–600 kOhm)
-    drawProgressBar(10, voc_y + 16, 300, 14, d.voc / 600.0f, vc);
+    // eCO2
+    float ev = (float)d.eco2;
+    uint16_t eC = qColor(ev, 800, 1200, 2000);
+    const char* eL = qLabel(ev, 800, 1200, 2000);
+    char eBuf[24];
+    snprintf(eBuf, sizeof(eBuf), "eCO2  %d ppm", d.eco2);
+
+    int y2 = y1 + 32;
+    M5.Lcd.setTextColor(eC, CLR_BG);
+    M5.Lcd.setTextDatum(ML_DATUM);
+    M5.Lcd.drawString(eBuf, 10, y2, 2);
+    M5.Lcd.setTextDatum(MR_DATUM);
+    M5.Lcd.drawString(eL, 310, y2, 2);
+    drawProgressBar(10, y2+12, 300, 10, d.eco2 / 2000.0f, eC);
 
     M5.Lcd.setTextDatum(TL_DATUM);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Page 1 — Environnement (température, humidité, pression, altitude)
-// ─────────────────────────────────────────────────────────────────────────────
+// Page Env : temperature, humidite, pression, GPS
 void drawPageEnv() {
-    // Titre
     M5.Lcd.setTextDatum(TC_DATUM);
     M5.Lcd.setTextColor(CLR_CYAN, CLR_BG);
-    M5.Lcd.drawString("ENVIRONNEMENT", 160, CONT_Y + 4, 2);
+    M5.Lcd.drawString("ENVIRONNEMENT", 160, CONT_Y+4, 2);
     M5.Lcd.setTextDatum(TL_DATUM);
 
-    // 4 lignes, chacune haute de 38px, centre vertical à row_y + 19
-    struct { const char* label; char value[20]; uint16_t color; } rows[4];
+    char val0[20], val1[20], val2[20], val3[32];
+    const char* labels[4];
+    uint16_t colors[4];
+    int fonts[4] = {4, 4, 4, 2};
 
-    snprintf(rows[0].value, 20, "%.1f C",   d.temp);
-    rows[0].label = "Temperature";
-    rows[0].color = qColor(d.temp, 28.0f, 35.0f);
+    snprintf(val0, sizeof(val0), "%.1f C", d.temp);
+    labels[0] = "Temperature";
+    colors[0] = tempColor(d.temp);
 
-    snprintf(rows[1].value, 20, "%.1f %%",  d.humi);
-    rows[1].label = "Humidite";
-    rows[1].color = qColor(d.humi, 60.0f, 80.0f);
+    snprintf(val1, sizeof(val1), "%.1f %%", d.humi);
+    labels[1] = "Humidite";
+    colors[1] = humiColor(d.humi);
 
-    snprintf(rows[2].value, 20, "%.0f hPa", d.pres);
-    rows[2].label = "Pression";
-    rows[2].color = WHITE;
+    snprintf(val2, sizeof(val2), "%.0f hPa", d.pres);
+    labels[2] = "Pression";
+    colors[2] = WHITE;
 
-    snprintf(rows[3].value, 20, "%.0f m",   d.alt);
-    rows[3].label = "Altitude";
-    rows[3].color = WHITE;
+    if (d.gpsValid) {
+        snprintf(val3, sizeof(val3), "%.4f / %.4f  %dsat", d.lat, d.lng, d.sats);
+        colors[3] = CLR_GOOD;
+    } else {
+        snprintf(val3, sizeof(val3), "Acquisition... %d sat", d.sats);
+        colors[3] = CLR_MED;
+    }
+    labels[3] = "GPS";
 
-    int row_y = CONT_Y + 28;
+    const char* values[4] = {val0, val1, val2, val3};
+    int ry = CONT_Y + 28;
     for (int i = 0; i < 4; i++) {
-        int mid = row_y + 19;
-
+        int mid = ry + 19;
         M5.Lcd.setTextColor(CLR_LABEL, CLR_BG);
         M5.Lcd.setTextDatum(ML_DATUM);
-        M5.Lcd.drawString(rows[i].label, 14, mid, 2);
-
-        M5.Lcd.setTextColor(rows[i].color, CLR_BG);
+        M5.Lcd.drawString(labels[i], 14, mid, 2);
+        M5.Lcd.setTextColor(colors[i], CLR_BG);
         M5.Lcd.setTextDatum(MR_DATUM);
-        M5.Lcd.drawString(rows[i].value, 310, mid, 4);
-
-        if (i < 3)
-            M5.Lcd.drawFastHLine(10, row_y + 38, 300, CLR_SEP);
-
-        row_y += 38;
+        M5.Lcd.drawString(values[i], 310, mid, fonts[i]);
+        if (i < 3) M5.Lcd.drawFastHLine(10, ry+38, 300, CLR_SEP);
+        ry += 38;
     }
-    M5.Lcd.setTextDatum(TL_DATUM);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Page 2 — Localisation GPS
-// ─────────────────────────────────────────────────────────────────────────────
-void drawPageGPS() {
-    // Titre
-    M5.Lcd.setTextDatum(TC_DATUM);
-    M5.Lcd.setTextColor(CLR_CYAN, CLR_BG);
-    M5.Lcd.drawString("LOCALISATION GPS", 160, CONT_Y + 4, 2);
-
-    if (!d.gpsValid) {
-        // Attente de fix
-        M5.Lcd.setTextColor(CLR_OK, CLR_BG);
-        M5.Lcd.drawString("Acquisition satellite...", 160, CONT_Y + 80, 2);
-
-        char satBuf[32];
-        snprintf(satBuf, sizeof(satBuf), "%d satellite(s) detecte(s)", d.sats);
-        M5.Lcd.setTextColor(CLR_LABEL, CLR_BG);
-        M5.Lcd.drawString(satBuf, 160, CONT_Y + 105, 2);
-
-        M5.Lcd.setTextDatum(TL_DATUM);
-        return;
-    }
-
-    M5.Lcd.setTextDatum(TL_DATUM);
-
-    char latBuf[20], lngBuf[20], satBuf[16], altBuf[16];
-    snprintf(latBuf, sizeof(latBuf), "%.5f", d.lat);
-    snprintf(lngBuf, sizeof(lngBuf), "%.5f", d.lng);
-    snprintf(satBuf, sizeof(satBuf), "%d",   d.sats);
-    snprintf(altBuf, sizeof(altBuf), "%.0f m", d.gpsAlt);
-
-    struct { const char* label; const char* value; } rows[4] = {
-        {"Latitude",   latBuf},
-        {"Longitude",  lngBuf},
-        {"Satellites", satBuf},
-        {"Altitude",   altBuf},
-    };
-
-    int row_y = CONT_Y + 28;
-    for (int i = 0; i < 4; i++) {
-        int mid = row_y + 19;
-
-        M5.Lcd.setTextColor(CLR_LABEL, CLR_BG);
-        M5.Lcd.setTextDatum(ML_DATUM);
-        M5.Lcd.drawString(rows[i].label, 14, mid, 2);
-
-        M5.Lcd.setTextColor(WHITE, CLR_BG);
-        M5.Lcd.setTextDatum(MR_DATUM);
-        M5.Lcd.drawString(rows[i].value, 310, mid, 4);
-
-        if (i < 3)
-            M5.Lcd.drawFastHLine(10, row_y + 38, 300, CLR_SEP);
-
-        row_y += 38;
-    }
-    M5.Lcd.setTextDatum(TL_DATUM);
-}
-
-// Page 3 — Statuts réseau & SD (WiFi, MQTT, carte SD, buffer)
-void drawPageNet() {
-    M5.Lcd.setTextDatum(TC_DATUM);
-    M5.Lcd.setTextColor(CLR_CYAN, CLR_BG);
-    M5.Lcd.drawString("STATUTS RESEAU & SD", 160, CONT_Y + 4, 2);
-
-    struct { const char* label; String value; uint16_t color; } netRows[4];
-
-    // --- Ligne 1 : WiFi ---
-    netRows[0].label = "WiFi (RSSI)";
-    if (WiFi.isConnected()) {
-        long rssi = WiFi.RSSI();
-        netRows[0].value = String(rssi) + " dBm";
-        netRows[0].color = (rssi > -70) ? CLR_GOOD : CLR_OK;
-    } else {
-        netRows[0].value = "DECONNECTE";
-        netRows[0].color = CLR_BAD;
-    }
-
-    // --- Ligne 2 : MQTT ---
-    netRows[1].label = "MQTT Cloud";
-    if (mqtt.connected()) {
-        netRows[1].value = "CONNECTE";
-        netRows[1].color = CLR_GOOD;
-    } else {
-        netRows[1].value = "ERREUR " + String(mqtt.state());
-        netRows[1].color = CLR_BAD;
-    }
-
-    // --- Ligne 3 : Carte SD ---
-    netRows[2].label = "Carte SD";
-    if (sdAvailable) {
-        uint64_t freeBytes = (SD.totalBytes() - SD.usedBytes()) / (1024 * 1024);
-        netRows[2].value = String((unsigned long)freeBytes) + " MB libres";
-        netRows[2].color = (freeBytes < 10) ? CLR_BAD : CLR_GOOD;
-    } else {
-        netRows[2].value = "ABSENTE";
-        netRows[2].color = CLR_SEP;
-    }
-
-    // --- Ligne 4 : Buffer SD ---
-    netRows[3].label = "Buffer SD";
-    if (sdAvailable) {
-        if (SD.exists("/buffer.txt")) {
-            File f = SD.open("/buffer.txt", FILE_READ);
-            long sz = f.size();
-            f.close();
-            if (sz < 1024) {
-                netRows[3].value = String(sz) + " B";
-            } else {
-                netRows[3].value = String(sz / 1024) + " KB";
-            }
-            netRows[3].color = CLR_BAD; // Rouge = données en attente
-        } else {
-            netRows[3].value = "VIDE (OK)";
-            netRows[3].color = CLR_GOOD;
-        }
-    } else {
-        netRows[3].value = "INACTIF";
-        netRows[3].color = CLR_SEP;
-    }
-
-    // Affichage des lignes
-    int row_y = CONT_Y + 28;
-    for (int i = 0; i < 4; i++) {
-        int mid = row_y + 19;
-        M5.Lcd.setTextColor(CLR_LABEL, CLR_BG);
-        M5.Lcd.setTextDatum(ML_DATUM);
-        M5.Lcd.drawString(netRows[i].label, 14, mid, 2);
-
-        M5.Lcd.setTextColor(netRows[i].color, CLR_BG);
-        M5.Lcd.setTextDatum(MR_DATUM);
-        M5.Lcd.drawString(netRows[i].value, 310, mid, 4);
-
-        if (i < 3) M5.Lcd.drawFastHLine(10, row_y + 38, 300, CLR_SEP);
-        row_y += 38;
-    }
-    M5.Lcd.setTextDatum(TL_DATUM);
-}
-
-// Page 4 — Capteur de composés organiques volatils (TVOC / eCO2 via SGP30)
-void drawPageSGP() {
-    M5.Lcd.setTextDatum(TC_DATUM);
-    M5.Lcd.setTextColor(CLR_CYAN, CLR_BG);
-    M5.Lcd.drawString("TVOC / eCO2 (SGP30)", 160, CONT_Y + 4, 2);
-
-    if (!d.sgpOk) {
-        M5.Lcd.setTextColor(CLR_BAD, CLR_BG);
-        M5.Lcd.drawString("Capteur non detecte", 160, CONT_Y + 80, 2);
-        M5.Lcd.setTextDatum(TL_DATUM);
-        return;
-    }
-
-    // ── TVOC ──────────────────────────────────────────────────────────────
-    uint16_t tvocColor = qColor((float)d.tvoc, 150, 500);
-    const char* tvocLabel = (d.tvoc < 150) ? "EXCELLENT" :
-                            (d.tvoc < 500) ? "MOYEN"    : "MAUVAIS";
-
-    char tvocBuf[20];
-    snprintf(tvocBuf, sizeof(tvocBuf), "%d ppb", d.tvoc);
-
-    int y1 = CONT_Y + 34;
-    M5.Lcd.setTextColor(CLR_LABEL, CLR_BG);
-    M5.Lcd.setTextDatum(ML_DATUM);
-    M5.Lcd.drawString("TVOC", 14, y1, 2);
-    M5.Lcd.setTextColor(tvocColor, CLR_BG);
-    M5.Lcd.setTextDatum(MR_DATUM);
-    M5.Lcd.drawString(tvocBuf, 200, y1, 4);
-    M5.Lcd.setTextDatum(MR_DATUM);
-    M5.Lcd.drawString(tvocLabel, 310, y1, 2);
-    drawProgressBar(10, y1 + 16, 300, 14, d.tvoc / 1000.0f, tvocColor);
-
-    M5.Lcd.drawFastHLine(10, CONT_Y + 78, 300, CLR_SEP);
-
-    // ── eCO2 ──────────────────────────────────────────────────────────────
-    uint16_t eco2Color = qColor((float)d.eco2, 800, 1500);
-    const char* eco2Label = (d.eco2 < 800)  ? "BON"     :
-                            (d.eco2 < 1500) ? "MOYEN"  : "MAUVAIS";
-
-    char eco2Buf[20];
-    snprintf(eco2Buf, sizeof(eco2Buf), "%d ppm", d.eco2);
-
-    int y2 = CONT_Y + 100;
-    M5.Lcd.setTextColor(CLR_LABEL, CLR_BG);
-    M5.Lcd.setTextDatum(ML_DATUM);
-    M5.Lcd.drawString("eCO2", 14, y2, 2);
-    M5.Lcd.setTextColor(eco2Color, CLR_BG);
-    M5.Lcd.setTextDatum(MR_DATUM);
-    M5.Lcd.drawString(eco2Buf, 200, y2, 4);
-    M5.Lcd.setTextDatum(MR_DATUM);
-    M5.Lcd.drawString(eco2Label, 310, y2, 2);
-    drawProgressBar(10, y2 + 16, 300, 14, d.eco2 / 3000.0f, eco2Color);
-
-    // ── Note de chauffe ───────────────────────────────────────────────────
-    M5.Lcd.setTextColor(CLR_LABEL, CLR_BG);
-    M5.Lcd.setTextDatum(TC_DATUM);
-    M5.Lcd.drawString("(15 min de chauffe pour stabilisation)", 160, CONT_Y + 155, 1);
-
     M5.Lcd.setTextDatum(TL_DATUM);
 }

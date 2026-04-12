@@ -26,3 +26,9 @@ Thumbs.db
 
 # Divers
 *.log
+
+# Credentials firmware
+src/credentials.h
+
+# Docker
+docker/.env
