@@ -84,19 +84,6 @@ sensor.m5stack_1_battery
 Si tes entity_ids sont differents, ajuste la regex `^m5stack_1_` dans les
 requetes Flux de `grafana/dashboards/air-quality-map.json`.
 
-## Verifications utiles
-
-```bash
-# InfluxDB repond ?
-curl -s http://localhost:8086/health
-
-# Logs en direct
-docker compose logs -f
-
-# Dans InfluxDB UI : Data Explorer -> bucket "homeassistant"
-# Les mesures m5stack_1_* apparaissent apres quelques cycles MQTT (10 s)
-```
-
 ## Arreter / reinitialiser
 
 ```bash

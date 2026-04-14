@@ -64,8 +64,6 @@ La barre de statut affiche la connexion (vert/jaune/rouge) et le niveau de batte
 | PM1.0 (ug/m3) | 0-10 | 10-20 | 20-35 | >35 | Extrapole depuis PM2.5 |
 | TVOC (ppb) | 0-220 | 220-660 | 660-2200 | >2200 | ANSES, UBA (Allemagne) |
 | eCO2 (ppm) | 400-800 | 800-1200 | 1200-2000 | >2000 | ANSES, NF EN 16798-1 |
-| Temperature | 19-24 C | 17-27 C | 14-30 C | hors | ANSES |
-| Humidite | 40-60% | 30-70% | 20-80% | hors | ANSES, OMS |
 
 Sources :
 - **Indice ATMO** : atmo-france.org (indice national de qualite de l'air)
